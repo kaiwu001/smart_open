@@ -12,12 +12,16 @@ import functools
 import logging
 import time
 import warnings
-
+from collections import defaultdict
 try:
     import boto3
     import botocore.client
     import botocore.exceptions
     import urllib3.exceptions
+    from awscrt.s3 import S3Client, S3RequestType, create_default_s3_signing_config
+    from awscrt.io import ClientBootstrap, ClientTlsContext, DefaultHostResolver, EventLoopGroup, TlsConnectionOptions, TlsContextOptions
+    from awscrt.auth import AwsCredentialsProvider, AwsSignatureType, AwsSignedBodyHeaderType, AwsSignedBodyValue, AwsSigningAlgorithm, AwsSigningConfig
+    from awscrt.http import HttpHeaders, HttpRequest
 except ImportError:
     MISSING_DEPS = True
 
@@ -52,6 +56,128 @@ _SLEEP_SECONDS = 10
 # Returned by AWS when we try to seek beyond EOF.
 _OUT_OF_RANGE = 'InvalidRange'
 
+class CRTclient:
+    def __init__(self,region,credential_provider=None,throughput_target_gbps=100,timeout=3000,part_size=4 * (1024 ** 2)):
+        self.client = None
+        self.region = region
+        self.throughput_target_gbps = throughput_target_gbps
+        self.bootstrap = self.setup_bootstrap()
+        if credential_provider==None:
+            self.credential_provider = AwsCredentialsProvider.new_default_chain(self.bootstrap)
+        else:
+            self.credential_provider = credential_provider
+        self.result = io.BytesIO()
+        self.received_body_len = 0
+        self.start_pos = 0
+        self.queue = []
+        self.response_status_code = 0
+        self.response_headers=defaultdict(str)
+        self.header = None
+        self.timeout=timeout
+        self.part_size=part_size
+        self.client = self.init_client()
+        self.done = False
+
+    def setup_bootstrap(self):
+        event_loop_group = EventLoopGroup(18)
+        host_resolver = DefaultHostResolver(event_loop_group)
+        return ClientBootstrap(event_loop_group, host_resolver)
+    def init_client(self):
+        signing_config = create_default_s3_signing_config(region=self.region, credential_provider=self.credential_provider)
+        opt = TlsContextOptions()
+        ctx = ClientTlsContext(opt)
+        tls_option = TlsConnectionOptions(ctx)
+        s3_client = S3Client(
+            bootstrap=self.bootstrap,
+            region=self.region,
+            signing_config=signing_config,
+            tls_connection_options=tls_option,
+            throughput_target_gbps=self.throughput_target_gbps,
+            part_size=self.part_size)
+        return s3_client
+    def _build_endpoint_string(self, region, bucket_name):
+        return bucket_name + ".s3." + region + ".amazonaws.com"
+    def _on_body(self,offset, chunk, **kwargs):
+        # first write to a queue to store every chunk of data
+        self.result.write(chunk)
+        self.received_body_len+=len(chunk)
+    def _on_done(self,**kwargs):
+        # sort the queue by offset
+        #self.queue.sort(key=lambda x:x[0])
+        # write to IO
+        # for offset,chunk in self.queue:
+        #     self.result.write(chunk)
+        self.queue = []
+        # self.done=True
+        #print('result body',self.result.getbuffer().nbytes)
+        #print('self.received_body_len',self.received_body_len)
+
+        if self.received_body_len!=self.result.getbuffer().nbytes:
+            print('Error: received_body_len is not equal to result bufffer, exiting')
+            exit()
+    def crt(self):
+        return True
+    def to_dict(self,header):
+        dict = {}
+        dict['ResponseMetadata']={'RetryAttempts':1}
+        for key,val in header:
+            dict[key]=val
+        dict['ContentRange'] = dict['Content-Range']
+        return dict
+    def get_received_length(self):
+        return self.received_body_len
+    def cleanup(self):
+        self.done=False
+        self.result = io.BytesIO()
+        if self.queue:
+            self.queue = []
+        self.received_body_len = 0
+        self.response_status_code = None
+        self.response_headers = None
+    def get_start_pos(self):
+        print(int(self.start_pos))
+        return int(self.start_pos)
+    def _on_headers(self, status_code, headers, **kargs):
+        # clean up the queue
+        self.response_status_code = status_code
+        self.response_headers = self.to_dict(headers)
+    def _get_object_request(self, bucket_name,object_path,range_string):
+        if range_string:
+            assert(range_string.startswith('bytes='))
+            s = range_string[6:].split('-')
+            self.start_pos=int(s[0])
+            headers = HttpHeaders([("host", self._build_endpoint_string(self.region, bucket_name)),("Range",range_string)])
+        else:
+            headers = HttpHeaders([("host", self._build_endpoint_string(self.region, bucket_name))])
+        # add '/' if object path did not have leading /
+        if object_path[0]!='/':
+            object_path= '/' + object_path
+        request = HttpRequest("GET", object_path, headers)
+        return request
+    def get_object(self,Bucket, Key, Range=None,VersionId=None):
+        # before getting a new object, must clean up the old caches and states
+        self.cleanup()
+        request = self._get_object_request(Bucket,Key,Range)
+        request_type = S3RequestType.GET_OBJECT
+        s3_request = self.client.make_request(
+        request=request,
+        type=request_type,
+        on_body=self._on_body,
+        on_done=self._on_done,
+        on_headers=self._on_headers)
+        finished_future = s3_request.finished_future
+        try:
+            finished_future.result(self.timeout)
+        except Exception as e:
+            print('Error when getting object using CRTclient',e)
+        return self.response_headers
+    def get_result(self):
+        # waiting for the async downloading to be completed
+        # while not self.done:
+        #     time.sleep(0.05)
+        # set the pointer back to beginning
+        self.result.seek(0)
+        return self.result
 
 class _ClientWrapper:
     """Wraps a client to inject the appropriate keyword args into each method call.
@@ -232,7 +358,7 @@ def open(
     buffer_size=DEFAULT_BUFFER_SIZE,
     min_part_size=DEFAULT_MIN_PART_SIZE,
     multipart_upload=True,
-    defer_seek=False,
+    defer_seek=True,
     client=None,
     client_kwargs=None,
     writebuffer=None,
@@ -323,6 +449,8 @@ def open(
 
 
 def _get(client, bucket, key, version, range_string):
+    #print(bucket,key,version,range_string)
+    print('_get',bucket,key,range_string)
     try:
         if version:
             return client.get_object(Bucket=bucket, Key=key, VersionId=version, Range=range_string)
@@ -384,10 +512,11 @@ class _SeekableRawReader(object):
         # Close old body explicitly.
         # When first seek() after __init__(), self._body is not exist.
         #
-        if self._body is not None:
-            self._body.close()
-        self._body = None
-
+        try:
+            crt = self._client.crt()
+        except Exception as e:
+            #print(e)
+            crt=False
         start = None
         stop = None
         if whence == constants.WHENCE_START:
@@ -396,8 +525,21 @@ class _SeekableRawReader(object):
             start = max(0, offset + self._position)
         else:
             stop = max(0, -offset)
+        # stored the _client.get_start_pos() is where the cache begins, every absolute seek must convert the relative position
+        if crt and self._body != None and start - self._client.get_start_pos() < self._client.get_received_length():
+            # use CRTclient's cache
+            print(self._client.get_start_pos())
+            pos = start - self._client.get_start_pos()
+            print(pos,'seekstart',start,self._body.tell())
+            self._body.seek(pos)
+            print('after',start,self._body.tell())
+            return start
+        else:
+            # s3 no cache
+            if self._body is not None:
+                self._body.close()
+            self._body = None
 
-        #
         # If we can figure out that we've read past the EOF, then we can save
         # an extra API call.
         #
@@ -414,8 +556,9 @@ class _SeekableRawReader(object):
             self._body = io.BytesIO()
             self._position = self._content_length
         else:
+            #print('_open_body',start,stop)
             self._open_body(start, stop)
-
+        #print('self._position',self._position)
         return self._position
 
     def _open_body(self, start=None, stop=None):
@@ -432,9 +575,14 @@ class _SeekableRawReader(object):
         if start is None and stop is None:
             start = self._position
         range_string = smart_open.utils.make_range_string(start, stop)
-
+        try:
+            crt = self._client.crt()
+        except Exception as e:
+            #print(e)
+            crt=False
         try:
             # Optimistically try to fetch the requested content range.
+
             response = _get(
                 self._client,
                 self._bucket,
@@ -456,15 +604,14 @@ class _SeekableRawReader(object):
             #
             # https://boto3.amazonaws.com/v1/documentation/api/latest/guide/retries.html#checking-retry-attempts-in-an-aws-service-response
             #
-            logger.debug(
-                '%s: RetryAttempts: %d',
-                self,
-                response['ResponseMetadata']['RetryAttempts'],
-            )
             units, start, stop, length = smart_open.utils.parse_content_range(response['ContentRange'])
             self._content_length = length
             self._position = start
-            self._body = response['Body']
+            if crt:
+                self._body = self._client.get_result()
+                #print('opened body')
+            else:
+                self._body = response['Body']
 
     def read(self, size=-1):
         """Read from the continuous connection with the remote peer."""
@@ -488,11 +635,14 @@ class _SeekableRawReader(object):
         # enough to recover, but we try multiple times "just in case".
         #
         for attempt, seconds in enumerate([1, 2, 4, 8, 16], 1):
+            #print('size',size,self._body.tell())
             try:
                 if size == -1:
                     binary = self._body.read()
                 else:
                     binary = self._body.read(size)
+
+                assert(len(binary)!=0)
             except (
                 ConnectionResetError,
                 botocore.exceptions.BotoCoreError,
@@ -545,7 +695,7 @@ class Reader(io.BufferedIOBase):
         version_id=None,
         buffer_size=DEFAULT_BUFFER_SIZE,
         line_terminator=constants.BINARY_NEWLINE,
-        defer_seek=False,
+        defer_seek=True,
         client=None,
         client_kwargs=None,
     ):
@@ -662,7 +812,7 @@ class Reader(io.BufferedIOBase):
         if whence == constants.WHENCE_CURRENT:
             whence = constants.WHENCE_START
             offset += self._current_pos
-
+        #print('seekoffset',offset,self._current_pos)
         self._current_pos = self._raw_reader.seek(offset, whence)
 
         self._buffer.empty()
@@ -1283,3 +1433,4 @@ def _download_fileobj(bucket, key_name):
     buf = io.BytesIO()
     bucket.download_fileobj(key_name, buf)
     return buf.getvalue()
+
