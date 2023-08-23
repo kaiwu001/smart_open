@@ -1,8 +1,10 @@
 import botocore
 import smart_open
 import hashlib
+import boto3
 from smart_open.s3 import CRTclient
 import time
+import io
 crt={}
 boto_session = botocore.session.Session()
 boto_session.set_config_variable("tcp_keepalive", "true")
@@ -48,4 +50,13 @@ s3 = time.time()
 print('crt_time_used',s2-s1)
 print('original_time_used',s3-s2)
 print('all hash is correct',hash_crt2,hash_2)
+s3r = boto3.resource('s3')
+bucket = s3r.Bucket("waabi-live-training-datasets-us-east-1")
+def do_boto3_download(key: str):
+    bytes_buffer = io.BytesIO()
+    s3r.meta.client.download_fileobj(Bucket="waabi-live-training-datasets-us-east-1", Key=key, Fileobj=bytes_buffer)
+    return bytes_buffer
+b1 = time.time()
+do_boto3_download('staging/pandar_hwy101_curated_v1_human_labelled_train_2023_07_07/00000000-0000-0000-0000-000000000020.tess')
+print('boto3',time.time()-b1)
 

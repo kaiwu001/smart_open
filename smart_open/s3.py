@@ -77,7 +77,8 @@ class CRTclient:
         self.part_size=part_size
         self.client = self.init_client()
         self.done = False
-
+        self.write_time = 0
+        self.start_time = 0
     def setup_bootstrap(self):
         event_loop_group = EventLoopGroup(18)
         host_resolver = DefaultHostResolver(event_loop_group)
@@ -99,8 +100,12 @@ class CRTclient:
         return bucket_name + ".s3." + region + ".amazonaws.com"
     def _on_body(self,offset, chunk, **kwargs):
         # first write to a queue to store every chunk of data
+        s1 = time.time()
+        if not self.write_time:
+            print('time to receive first byte',s1-self.start_time)
         self.result.write(chunk)
         self.received_body_len+=len(chunk)
+        self.write_time += time.time()-s1
     def _on_done(self,**kwargs):
         # sort the queue by offset
         #self.queue.sort(key=lambda x:x[0])
@@ -108,13 +113,14 @@ class CRTclient:
         # for offset,chunk in self.queue:
         #     self.result.write(chunk)
         self.queue = []
+        print('writing takes',self.write_time)
         # self.done=True
         #print('result body',self.result.getbuffer().nbytes)
         #print('self.received_body_len',self.received_body_len)
 
-        if self.received_body_len!=self.result.getbuffer().nbytes:
-            print('Error: received_body_len is not equal to result bufffer, exiting')
-            exit()
+        # if self.received_body_len!=self.result.getbuffer().nbytes:
+        #     print('Error: received_body_len is not equal to result bufffer, exiting')
+        #     exit()
     def crt(self):
         return True
     def to_dict(self,header):
@@ -135,7 +141,6 @@ class CRTclient:
         self.response_status_code = None
         self.response_headers = None
     def get_start_pos(self):
-        print(int(self.start_pos))
         return int(self.start_pos)
     def _on_headers(self, status_code, headers, **kargs):
         # clean up the queue
@@ -156,6 +161,7 @@ class CRTclient:
         return request
     def get_object(self,Bucket, Key, Range=None,VersionId=None):
         # before getting a new object, must clean up the old caches and states
+        t1=time.time()
         self.cleanup()
         request = self._get_object_request(Bucket,Key,Range)
         request_type = S3RequestType.GET_OBJECT
@@ -166,10 +172,15 @@ class CRTclient:
         on_done=self._on_done,
         on_headers=self._on_headers)
         finished_future = s3_request.finished_future
+        self.start_time = time.time()
+        print('setup_time',self.start_time-t1)
         try:
             finished_future.result(self.timeout)
         except Exception as e:
             print('Error when getting object using CRTclient',e)
+        t2 = time.time()
+        print('result time',t2-self.start_time)
+        print('get_object_time',t2-t1)
         return self.response_headers
     def get_result(self):
         # waiting for the async downloading to be completed
