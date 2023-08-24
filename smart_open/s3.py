@@ -624,11 +624,8 @@ class _SeekableRawReader(object):
                 #print('opened body')
             else:
                 self._body = response['Body']
-    def get_object_range(self,start,end):
+    def open_object_range(self,start,end):
         self._open_body(start,end)
-        binary = self._body.read()
-        self._position += len(binary)
-        return binary
     def read(self, size=-1):
         """Read from the continuous connection with the remote peer."""
         if self._body is None:
@@ -744,9 +741,10 @@ class Reader(io.BufferedIOBase):
     #
     def get_object_range(self,start,end):
         t1=time.time()
-        out = self._raw_reader.get_object_range(start,end)
+        self._raw_reader.open_object_range(start,end)
         t2 = time.time()
-        print('get range all',t2-t1)
+        out = self._raw_reader.read()
+        print('open_range',t2-t1,'read', time.time()-t2)
         return out
     def close(self):
         """Flush and close this stream."""
