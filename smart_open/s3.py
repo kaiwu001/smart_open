@@ -603,6 +603,7 @@ class _SeekableRawReader(object):
             )
         except IOError as ioe:
             # Handle requested content range exceeding content size.
+            print('error_response',error_response)
             error_response = _unwrap_ioerror(ioe)
             if error_response is None or error_response.get('Code') != _OUT_OF_RANGE:
                 raise
@@ -624,12 +625,10 @@ class _SeekableRawReader(object):
             else:
                 self._body = response['Body']
     def get_object_range(self,start,end):
-        if self._body != None:
-            self._body = None
         self._open_body(start,end)
-        # binary = self._body.read()
-        # self._position += len(binary)
-        # return binary
+        binary = self._body.read()
+        self._position += len(binary)
+        return binary
     def read(self, size=-1):
         """Read from the continuous connection with the remote peer."""
         if self._body is None:
@@ -745,10 +744,9 @@ class Reader(io.BufferedIOBase):
     #
     def get_object_range(self,start,end):
         t1=time.time()
-        self._raw_reader.get_object_range(start,end)
+        out = self._raw_reader.get_object_range(start,end)
         t2 = time.time()
-        out = self.read()
-        print('get range',t2-t1, 'read',time.time()-t2)
+        print('get range all',t2-t1)
         return out
     def close(self):
         """Flush and close this stream."""
