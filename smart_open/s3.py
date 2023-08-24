@@ -42,7 +42,7 @@ SCHEMES = ("s3", "s3n", 's3u', "s3a")
 DEFAULT_PORT = 443
 DEFAULT_HOST = 's3.amazonaws.com'
 
-DEFAULT_BUFFER_SIZE = 128 * 1024
+DEFAULT_BUFFER_SIZE = 512 * 1024
 
 URI_EXAMPLES = (
     's3://my_bucket/my_key',
@@ -654,7 +654,7 @@ class _SeekableRawReader(object):
         # enough to recover, but we try multiple times "just in case".
         #
         for attempt, seconds in enumerate([1, 2, 4, 8, 16], 1):
-            print('size',size,self._body.tell())
+            #print('size',size,self._body.tell())
             try:
                 if size == -1:
                     binary = self._body.read()
