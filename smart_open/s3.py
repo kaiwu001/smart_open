@@ -460,8 +460,6 @@ def open(
 
 
 def _get(client, bucket, key, version, range_string):
-    #print(bucket,key,version,range_string)
-    print('_get',bucket,key,range_string)
     try:
         if version:
             return client.get_object(Bucket=bucket, Key=key, VersionId=version, Range=range_string)
@@ -753,8 +751,6 @@ class Reader(io.BufferedIOBase):
         t2 = time.time()
         out = self.read(end-start)
         assert(len(out)==end-start)
-        assert isinstance(out, bytes)
-        print('open_range',t2-t1,'read', time.time()-t2)
         return out
     def close(self):
         """Flush and close this stream."""
