@@ -654,14 +654,12 @@ class _SeekableRawReader(object):
         # enough to recover, but we try multiple times "just in case".
         #
         for attempt, seconds in enumerate([1, 2, 4, 8, 16], 1):
-            #print('size',size,self._body.tell())
+            print('size',size,self._body.tell())
             try:
                 if size == -1:
                     binary = self._body.read()
                 else:
                     binary = self._body.read(size)
-
-                assert(len(binary)!=0)
             except (
                 ConnectionResetError,
                 botocore.exceptions.BotoCoreError,
@@ -755,6 +753,7 @@ class Reader(io.BufferedIOBase):
         t2 = time.time()
         out = self.read(end-start)
         assert(len(out)==end-start)
+        assert isinstance(out, bytes)
         print('open_range',t2-t1,'read', time.time()-t2)
         return out
     def close(self):
