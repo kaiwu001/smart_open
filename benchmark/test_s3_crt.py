@@ -28,9 +28,9 @@ with smart_open.open(
         t4 = time.time()
         print('crt',t1-s1,t2-t1,t3-t2,t4-t1)
         hash_crt2 = hashlib.md5(buf).hexdigest()
-s3 = {}
+s3_config = {}
 with smart_open.open(
-    url, mode="rb", transport_params=s3
+    url, mode="rb", transport_params=s3_config
 ) as fp:
         s2 = time.time()
 
@@ -50,6 +50,24 @@ s3 = time.time()
 print('crt_time_used',s2-s1)
 print('original_time_used',s3-s2)
 print('all hash is correct',hash_crt2,hash_2)
+
+with smart_open.open(
+    url, mode="rb", transport_params=s3_config
+) as fp:
+
+    s2 = time.time()
+
+    fp.get_object_range(512,512+19247284)
+    t1 = time.time()
+    #hash_crt1 = hashlib.md5(buf).hexdigest()
+    fp.get_object_range(20247284,20247284+12247284)
+    t2 = time.time()
+    fp.get_object_range(30247284,30247284+19247284)
+    t3 = time.time()
+    print('s3 get_object_range',t1-s2,t2-t1,t3-t2)
+
+
+
 s3r = boto3.resource('s3')
 bucket = s3r.Bucket("waabi-live-training-datasets-us-east-1")
 def do_boto3_download(key: str):
