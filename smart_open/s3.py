@@ -625,8 +625,13 @@ class _SeekableRawReader(object):
             else:
                 self._body = response['Body']
     def open_object_range(self,start,end):
+        self._content_length=0
+        if self._body is not None:
+            self._body.close()
+        self._body = None
         self._open_body(start,end)
-        self._position=0
+        self._position=-1
+
     def read(self, size=-1):
         """Read from the continuous connection with the remote peer."""
         if self._body is None:
@@ -727,6 +732,7 @@ class Reader(io.BufferedIOBase):
         self._current_pos = 0
         self._buffer = smart_open.bytebuffer.ByteBuffer(buffer_size)
         self._eof = False
+        self.buffer_size =buffer_size
         self._line_terminator = line_terminator
 
         #
@@ -741,6 +747,9 @@ class Reader(io.BufferedIOBase):
     # io.BufferedIOBase methods.
     #
     def get_object_range(self,start,end):
+        self._eof = False
+        self._current_pos = 0
+        self._buffer = smart_open.bytebuffer.ByteBuffer(self.buffer_size)
         t1=time.time()
         self._raw_reader.open_object_range(start,end)
         t2 = time.time()
